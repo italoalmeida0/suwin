@@ -1,6 +1,7 @@
 // runner.js - Process spawning, streaming and lifecycle management
 import { spawn, exec } from 'node:child_process';
 import path from 'node:path';
+import fs from 'node:fs';
 import {
   REASON_EXITED,
   REASON_INTERRUPTED,
@@ -10,6 +11,31 @@ import {
   EXIT_TERMINATED,
   EXIT_TIMEOUT
 } from './protocol.js';
+
+// Internal Windows cmd.exe built-in commands
+const CMD_BUILTINS = new Set([
+  'assoc', 'attrib', 'break', 'call', 'cd', 'chcp', 'chdir', 'cls', 'color',
+  'copy', 'date', 'del', 'dir', 'echo', 'endlocal', 'erase', 'exit', 'for',
+  'ftype', 'goto', 'help', 'if', 'md', 'mkdir', 'mklink', 'move', 'path',
+  'pause', 'popd', 'prompt', 'pushd', 'rd', 'rem', 'ren', 'rename', 'rmdir',
+  'set', 'setlocal', 'shift', 'start', 'time', 'title', 'type', 'ver', 'verify',
+  'vol'
+]);
+
+function resolveExecutableWindows(prog, cwd = process.cwd()) {
+  if (path.extname(prog)) return prog;
+  const pathExt = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';');
+  const pathenv = (process.env.PATH || '').split(path.delimiter);
+  for (const dir of [cwd, ...pathenv]) {
+    for (const ext of pathExt) {
+      const candidate = path.join(dir, prog + ext);
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch {}
+    }
+  }
+  return prog;
+}
 
 export function killProcessTree(pid) {
   if (!pid) return;
@@ -75,9 +101,37 @@ export class Session {
       if (!this.argv.length) {
         throw new Error('No command provided in argv');
       }
-      executable = this.argv[0];
-      args = this.argv.slice(1);
-      this.command = this.argv.join(' ');
+
+      const rawProg = this.argv[0];
+      const progLower = rawProg.toLowerCase();
+
+      if (process.platform === 'win32') {
+        const resolved = resolveExecutableWindows(rawProg, this.cwd);
+        const resolvedLower = resolved.toLowerCase();
+
+        if (CMD_BUILTINS.has(progLower) || resolvedLower.endsWith('.cmd') || resolvedLower.endsWith('.bat')) {
+          executable = 'cmd.exe';
+          const cmdLine = this.argv.join(' ');
+          args = ['/d', '/s', '/c', cmdLine];
+          this.command = cmdLine;
+        } else if (progLower === 'cmd' || progLower === 'cmd.exe') {
+          executable = 'cmd.exe';
+          args = this.argv.slice(1);
+          // Turn off pipe echo so input lines are not duplicated on screen
+          if (!args.some(a => /^[/-]q$/i.test(a))) {
+            args.unshift('/q');
+          }
+          this.command = this.argv.join(' ');
+        } else {
+          executable = resolved;
+          args = this.argv.slice(1);
+          this.command = this.argv.join(' ');
+        }
+      } else {
+        executable = rawProg;
+        args = this.argv.slice(1);
+        this.command = this.argv.join(' ');
+      }
     }
 
     // Spawn process with windowsHide: true (guarantees NO window ever flashes on screen)

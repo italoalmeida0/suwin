@@ -59,7 +59,20 @@ async function runTests() {
     assert.ok(stderrData.includes('STDERR OK'), `stderr should contain STDERR OK, got: ${stderrData}`);
     console.log('✓ Pipe command executed successfully and streamed stdout/stderr');
 
-    // 5. Test shell command
+    // 5. Test builtin command without explicit shell flag (e.g. echo 1)
+    let builtinStdout = '';
+    const resBuiltin = await runCommand({
+      argv: ['echo', 'BUILTIN_ECHO_WORKS'],
+      shell: false,
+      stdout: {
+        write: (chunk) => { builtinStdout += chunk.toString(); }
+      }
+    });
+    assert.strictEqual(resBuiltin.code, 0, 'Builtin exit code should be 0');
+    assert.ok(builtinStdout.includes('BUILTIN_ECHO_WORKS'), 'Builtin echo command output verified');
+    console.log('✓ Builtin command without shell flag executed successfully');
+
+    // 6. Test shell command
     let shellStdout = '';
     const resShell = await runCommand({
       argv: ['echo', 'SHELL_COMMAND_SUCCESS'],
@@ -73,7 +86,7 @@ async function runTests() {
     assert.ok(shellStdout.includes('SHELL_COMMAND_SUCCESS'), 'Shell command output verified');
     console.log('✓ Shell command executed successfully');
 
-    // 6. Test timeout
+    // 7. Test timeout
     const resTimeout = await runCommand({
       argv: [process.execPath, '-e', 'setTimeout(() => {}, 10000);'],
       timeoutMs: 500
