@@ -13,7 +13,10 @@
     "suwin": "node ./bin/suwin.js",
     "install-local": "node ./scripts/install.js",
     "uninstall-local": "node ./scripts/uninstall.js",
-    "test": "node test/e2e.test.js"
+    "test": "node --test --test-concurrency=1 test/e2e.test.js test/setup.test.js test/log.test.js test/tray.test.js",
+    "test:core": "node test/e2e.test.js",
+    "package": "node scripts/package.js",
+    "check": "node scripts/check.js"
   },
   "keywords": [
     "security",
@@ -24,7 +27,13 @@
     "session-manager",
     "tray"
   ],
-  "author": "",
+  "author": "Italo Almeida",
+  "repository": { "type": "git", "url": "https://github.com/italoalmeida0/suwin.git" },
+  "bugs": { "url": "https://github.com/italoalmeida0/suwin/issues" },
+  "homepage": "https://github.com/italoalmeida0/suwin#readme",
+  "engines": { "node": ">=22" },
+  "os": ["win32"],
+  "cpu": ["x64", "arm64"],
   "license": "MIT",
   "dependencies": {
     "koffi": "^3.3.5",

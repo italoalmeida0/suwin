@@ -2,9 +2,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import { isWindowsElevated, acquireWindowsServiceLock } from './windows.js';
 import { fileURLToPath } from 'node:url';
 import { SCHEMA_VERSION } from './protocol.js';
+import { VERSION } from './version.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -33,9 +35,7 @@ export function isElevated() {
     return typeof process.getuid === 'function' && process.getuid() === 0;
   }
   try {
-    // On Windows, 'net session' succeeds (exit code 0) only if running as Administrator.
-    execSync('net session', { stdio: 'ignore', windowsHide: true });
-    return true;
+    return isWindowsElevated();
   } catch {
     return false;
   }
@@ -88,6 +88,43 @@ export function ensureDir() {
   }
 }
 
+export function acquireServiceLock(dir, instance) {
+  if (process.platform === 'win32') {
+    const key = crypto.createHash('sha256').update(fs.realpathSync(dir).toLowerCase()).digest('hex');
+    return acquireWindowsServiceLock(`Global\\suwin-${key}`);
+  }
+  const file = path.join(dir, 'service.lock');
+  const alive = pid => {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return error.code === 'EPERM'; }
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fd;
+    try {
+      fd = fs.openSync(file, 'wx', 0o600);
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, instance }));
+      fs.closeSync(fd);
+      fd = undefined;
+      return () => {
+        try {
+          if (JSON.parse(fs.readFileSync(file, 'utf8')).instance === instance) fs.unlinkSync(file);
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      };
+    } catch (error) {
+      if (fd !== undefined) fs.closeSync(fd);
+      if (error.code !== 'EEXIST') throw error;
+      // An empty lock may be in the middle of being written by another process.
+      let owner;
+      try { owner = JSON.parse(fs.readFileSync(file, 'utf8')); }
+      catch { throw new Error('Another suwin service may be starting; try again'); }
+      if (alive(owner.pid)) throw new Error('Another suwin service is already running');
+      try { fs.unlinkSync(file); } catch (unlinkError) { if (unlinkError.code !== 'ENOENT') throw unlinkError; }
+    }
+  }
+  throw new Error('Could not acquire the suwin service lock');
+}
+
 /**
  * Writes the endpoint discovery file atomically.
  */
@@ -100,11 +137,13 @@ export function writeEndpoint(dir, info) {
     port: info.port,
     pid: process.pid,
     instance: info.instance,
-    version: info.version || '1.0.0',
+    version: info.version || VERSION,
     user: getCurrentUser(),
     elevated: info.elevated ?? isElevated(),
     dir: dir,
-    started: info.started || new Date().toISOString()
+    started: info.started || new Date().toISOString(),
+    home: info.home || getSuwinHome(),
+    stopToken: info.stopToken
   };
 
   fs.writeFileSync(tempFile, JSON.stringify(payload, null, 2), 'utf8');
@@ -122,7 +161,8 @@ export function readEndpoint() {
       try {
         const raw = fs.readFileSync(filePath, 'utf8');
         const data = JSON.parse(raw);
-        if (data && data.port) {
+        if (data?.schema === SCHEMA_VERSION && Number.isInteger(data.port) && data.port > 0 && data.port <= 65535 &&
+            Number.isInteger(data.pid) && data.pid > 0 && typeof data.instance === 'string' && data.instance) {
           return { endpoint: data, filePath };
         }
       } catch {
@@ -136,11 +176,12 @@ export function readEndpoint() {
 /**
  * Removes the endpoint.json file.
  */
-export function removeEndpoint(dir) {
+export function removeEndpoint(dir, instance) {
   const dirs = dir ? [dir] : candidateDirs();
   for (const d of dirs) {
     const filePath = path.join(d, ENDPOINT_FILE);
     try {
+      if (instance && JSON.parse(fs.readFileSync(filePath, 'utf8')).instance !== instance) continue;
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }

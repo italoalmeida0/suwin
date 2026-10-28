@@ -1,168 +1,220 @@
 # Security Undertaking Windows (`suwin`)
 
-[![Node.js](https://img.shields.io/badge/Node.js-v18%2B-green.svg)](https://nodejs.org/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20(x64%20%7C%20ARM64)-blue.svg)]()
-[![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
+[![CI](https://github.com/italoalmeida0/suwin/actions/workflows/ci.yml/badge.svg)](https://github.com/italoalmeida0/suwin/actions/workflows/ci.yml)
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org/)
+[![Windows](https://img.shields.io/badge/Windows-x64%20%7C%20ARM64-blue.svg)](#requirements)
+[![MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Security Undertaking Windows (`suwin`)** is a lightweight, human-in-the-loop administrative session coordinator and execution supervisor for Windows environments.
+Run administrative Windows commands from an ordinary terminal during a time window
+you authorize. `suwinsvc` requests elevation through the normal Windows UAC prompt,
+then lives in the notification area. `suwin` sends commands to it and streams their
+input, output and exit codes back to your terminal.
 
-It introduces a strictly supervised workflow where administrative commands can only be executed during an explicit, time-bounded authorization window approved through an interactive Windows notification area (System Tray) monitor.
+Installation is **per-user**, and startup is **manual**. There is no scheduled task,
+Windows service, machine PATH modification or automatic startup.
 
----
+## Requirements
 
-## Key Features
+- Windows x64 or ARM64 with a supported **Node.js LTS release, version 22 or newer**,
+  including npm. Download Node.js from [nodejs.org](https://nodejs.org/en/download).
+- ConPTY-capable Windows for interactive terminals (Windows 10 1809 or newer).
+- Git is needed only for the source installation below.
 
-* **🛡️ Human-in-the-Loop Security Model**: The unprivileged client tool (`suwin`) cannot self-authorize. Commands are only permitted when an authorized supervisor window is actively engaged by the operator.
-* **🟢 Native Win32 System Tray**: Real-time visual status indicator in the Windows taskbar tray powered natively via Win32 API bindings (`koffi`), featuring an interactive context menu to authorize sessions (15m, 1h, 3h, 24h) or instantly revoke access.
-* **🚀 Flicker-Free Execution**: Spawns processes silently (`windowsHide: true`) with direct duplex standard I/O streaming. No flickering `conhost.exe` consoles or disrupted focus.
-* **📁 Fully Self-Contained (`~/.suwin`)**: Completely isolated in your user home directory. Does not touch `C:\` or write system-wide files.
-* **⚡ 100% Pure Node.js & Windows Native APIs**: Runs on official signed runtimes without custom unverified binaries, ensuring zero antivirus or SmartScreen friction.
+The project uses Node.js, `ws` and the native `koffi` addon to call Windows APIs.
+No Go toolchain or locally compiled helper executable is required. Antivirus and
+SmartScreen behavior depends on your system; no exemption or bypass is installed.
 
----
+## Install
 
-## Architecture Overview
+Use a **normal PowerShell terminal**; the installer does not need administrator rights.
 
-```
-                      +---------------------------------------+
-                      | Windows Notification Area (Tray Icon) |
-                      |   [Active (green) / Inactive (gray)]  |
-                      +-------------------+-------------------+
-                                          | Operator interaction
-                                          v
-+-----------------------+     WebSocket     +---------------------------------------+
-|  User Terminal        | ================= |  Supervisor Service (suwinsvc)        |
-|  $ suwin whoami /priv |  (ws://127.0.0.1) |  - State coordinator (active/inactive)|
-+-----------------------+                   |  - Ephemeral timer & session governor |
-                                            +-------------------+-------------------+
-                                                                | Spawns child process
-                                                                v
-                                            +---------------------------------------+
-                                            | Target Command (elevated execution)   |
-                                            | - windowsHide: true                   |
-                                            | - Direct pipe streaming (in/out/err)  |
-                                            +---------------------------------------+
-```
+### Download a release
 
----
-
-## Installation
-
-Run the automated local installer:
+1. Download `suwin-1.0.0.zip` from the [latest release](https://github.com/italoalmeida0/suwin/releases/latest).
+2. Extract it and open PowerShell in the extracted `suwin-1.0.0` folder.
+3. Run:
 
 ```powershell
 node scripts/install.js
 ```
 
-This sets up:
-* **Installation Root**: `~/.suwin/` (`C:\Users\<user>\.suwin`)
-  * `bin/`: Wrapper commands (`suwin.cmd`, `suwinsvc.cmd`, `uninstall-suwin.cmd`)
-  * `node/`: Application runtime and dependencies
-  * `state/`: Runtime session endpoint (`endpoint.json`) and service log
-* **PATH Configuration**: Adds `~/.suwin/bin` to your User `PATH` environment variable.
-* **Autostart**: *Disabled*. `suwinsvc` is only invoked when you choose to start it.
+The installer downloads the exact dependencies from `package-lock.json` using
+`npm ci`, checks that the native addon loads and installs into:
 
----
+```text
+C:\Users\<you>\.suwin\
+  bin\             suwin.cmd, suwinsvc.cmd, uninstall-suwin.cmd
+  node\            application and npm dependencies
+  state\           endpoint.json and rotating suwinsvc.log
+  install.json     installation metadata
+  uninstall.js     installed uninstaller
+```
 
-## Quick Start
+It adds only `~\.suwin\bin` to your **user PATH**. **Open a new terminal** after
+installation. It does not start the supervisor.
 
-### 1. Launch the Supervisor Service
+Release archives include `SHA256SUMS.txt` as a separate download. To check an archive:
 
-In any PowerShell or Command Prompt terminal:
+```powershell
+Get-FileHash .\suwin-1.0.0.zip -Algorithm SHA256
+```
+
+### Install from source
+
+```powershell
+git clone https://github.com/italoalmeida0/suwin.git
+cd suwin
+node scripts/install.js
+```
+
+There is no separate `npm install` step for installation: the installer runs
+`npm ci` in its staging directory.
+
+Optional setup flags:
+
+```powershell
+node scripts/install.js --root D:\Tools\suwin
+node scripts/install.js --no-path
+```
+
+An existing target must be a suwin installation or an empty directory. A custom
+root changes the installation location, not the per-user/manual-start policy.
+With `--no-path`, invoke the wrappers using their full paths.
+
+## Use
+
+Start the supervisor when you need it:
 
 ```powershell
 suwinsvc
 ```
 
-* Prompts for Windows Administrator privileges via UAC once.
-* Starts the supervisor service in the background and **immediately frees your terminal**.
-* Mounts the **Security Undertaking Windows** shield icon in the notification area (system tray).
+Accept the UAC prompt. The launcher reports readiness after the supervisor and tray
+icon have initialized. The supervisor starts **inactive**.
 
-### 2. Authorize an Execution Window
-
-1. Click or right-click the **suwin** shield icon in your taskbar tray (check the `^` overflow menu if Windows grouped your icons).
-2. Select your desired authorization duration:
-   * **Activate for 15 minutes**
-   * **Activate for 1 hour**
-   * **Activate for 3 hours**
-   * **Activate for 24 hours**
-3. The icon illuminates green to indicate the session window is authorized. Hovering over the icon displays the live countdown.
-
-### 3. Execute Supervised Tasks
-
-Run your commands using `suwin` from any standard console:
+Click or right-click its tray icon and activate for **15 minutes, 1 hour, 3 hours
+or 24 hours**. Then use an ordinary terminal:
 
 ```powershell
-# Inspect administrative token privileges
 suwin whoami /priv
-
-# Manage Windows services
-suwin net stop wuauserv
-
-# Launch interactive administrative shells
+suwin ipconfig /flushdns
 suwin powershell -NoLogo
-
-# Execute complex shell pipelines
-suwin --shell "ipconfig /flushdns && echo Flush completed."
+suwin -t nvim
+suwin --timeout 30s --shell "net stop wuauserv && net start wuauserv"
 ```
 
-### 4. Revoke or Deactivate
+TTY mode is selected automatically when stdin and stdout are terminals. `-t`
+forces ConPTY; `--no-tty` uses pipes with separate stdout and stderr. Terminal
+input, escape sequences and size changes are forwarded. In TTY mode, Ctrl+C,
+including repeated presses, belongs to the application and does not start an
+automatic termination timer.
 
-At any time, right-click the tray icon and select **Deactivate**. All active sessions are terminated immediately, and subsequent command requests are rejected until re-authorized.
+Use **Deactivate** to revoke the window and terminate running commands, or **Quit**
+to close the supervisor. Expiration also terminates running sessions.
 
----
+## Command options
 
-## Command Reference
+```text
+suwin [options] <command> [args...]
+suwin [options] --shell "<command line>"
 
-### `suwin` (Execution Client)
-
-```
-Usage:
-  suwin [options] <command> [args...]
-  suwin [options] --shell "<command line>"
-
-Options:
-  -t, --tty             force pseudo-terminal allocation
-      --no-tty          disable pseudo-terminal, stream standard I/O pipes
-      --shell           execute command line through cmd.exe
-      --timeout <dur>   terminate command execution after duration (e.g. 30s, 5m)
-      --cwd <dir>       working directory for execution (default: current)
-      --version         print client version and exit
-  -h, --help            show this help
-```
-
-### `suwinsvc` (Supervisor Daemon)
-
-```
-Usage:
-  suwinsvc [options]
-
-Options:
-  -f, --foreground      run in foreground terminal monitor instead of background
-  -a, --active [dur]    start with authorized session window active (default: 15m)
-  -p, --port <port>     port to bind (default: random free loopback port)
-  --no-tray             disable the system tray icon
-  -h, --help            show this help
+  -t, --tty          force ConPTY
+      --no-tty       use standard I/O pipes
+      --shell        interpret the command line with cmd.exe
+      --cwd <dir>    working directory (default: the caller's)
+      --timeout <d>  command timeout: 500ms, 30s, 5m, 1h, or bare seconds
+      --version     print the version
+  -h, --help        print help
 ```
 
----
+Arguments and the caller's environment are forwarded. Windows system variables
+(`SystemRoot`, `windir`, `SystemDrive`, `ComSpec`) retain the supervisor's values.
+PATH/PATHEXT lookup uses the caller's environment. `.cmd` and `.bat` shims are supported.
 
-## Uninstallation
+The command's exit code is returned. Explicit timeouts use **124**; forced
+termination uses **143**; interruption in pipe mode uses **130**. Connection or
+startup errors use **1**. In TTY mode the application's actual exit code is preserved.
 
-To cleanly remove `suwin` and restore your system:
+Advanced supervisor options:
+
+```text
+suwinsvc --foreground          show the terminal monitor
+suwinsvc --port 51234          choose a loopback port
+suwinsvc --no-tray             omit the notification icon
+suwinsvc --active 15m          explicitly authorize at startup
+```
+
+`--active` still requires an already elevated launcher or normal UAC consent.
+Without that option, the supervisor starts inactive. `SUWIN_AUTOACTIVATE` provides
+the same explicit startup setting. `SUWIN_HOME` and `SUWIN_DIR` override runtime
+discovery locations for development; installed operation normally needs neither.
+
+## Update
+
+Download/extract a new release, or update your source checkout, then rerun:
+
+```powershell
+node scripts/install.js
+```
+
+Dependencies are prepared in a staging directory first. The installer then stops
+the existing supervisor and its commands, replaces the application, and preserves
+the state folder and logs. It leaves the supervisor stopped until you run
+`suwinsvc` again. If updating an older pre-release without shutdown support, quit
+that version from its tray icon before installing.
+
+## Uninstall
 
 ```powershell
 uninstall-suwin
 ```
 
-Or run:
+Or, from PowerShell:
+
 ```powershell
-node ~\.suwin\uninstall.js
+node "$env:USERPROFILE\.suwin\uninstall.js"
 ```
 
-This stops running supervisor services, removes `~/.suwin/bin` from your user `PATH`, and deletes the `~/.suwin` directory completely.
+The uninstaller requests shutdown using a stop-only capability, waits for the
+supervisor to exit, removes its entry from the user PATH and deletes its installation.
+It does not scan or delete legacy system folders. If shutdown cannot be confirmed,
+it reports an error and keeps the application files. Custom installations include
+their own `uninstall.js` with the correct location.
 
----
+## Security and process lifetime
+
+An active window authorizes **any local process that can reach the supervisor**.
+There is no per-command authentication or per-application allowlist. Activate it
+only when you trust the local environment, and deactivate it when finished.
+See [SECURITY.md](SECURITY.md) for the exact trust boundary.
+
+Each command is placed into a kill-on-close Windows Job Object before it runs.
+Disconnects, timeout, revocation and supervisor death terminate its process tree.
+The native tray uses a separate worker so an open menu does not block command I/O,
+keepalive or authorization expiration.
+
+Audit logs record activation, program names, working directories and session
+lifecycle. They omit arguments, environment values and command output. The log
+rotates at 1 MiB and keeps one previous file.
+
+## Development and verification
+
+```powershell
+npm ci
+npm run check
+npm test
+npm audit --omit=dev
+```
+
+CI tests Windows x64 and ARM64 with Node.js 22, 24 and 26. Coverage includes actual
+ConPTY input/resize, repeated Ctrl+C, process-tree cleanup, supervisor/client death,
+streaming backpressure, live updates and self-uninstall. Setup tests use temporary
+installation roots. The real user PATH round trip runs in disposable CI machines.
+Interactive desktop smoke tests can be enabled with `SUWIN_TRAY_TEST=1`.
+
+Tagged releases are published only after the CI matrix succeeds, with a source ZIP
+and SHA-256 checksum. The ZIP installs native dependencies for the target machine.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+[MIT](LICENSE) — Copyright © 2026 Italo Almeida.

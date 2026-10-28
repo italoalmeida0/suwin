@@ -1,245 +1,119 @@
-// runner.js - Process spawning, streaming and lifecycle management
-import { spawn, exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import path from 'node:path';
-import fs from 'node:fs';
+import { prepareCommand, mergeEnvironment } from './command.js';
+import { WindowsProcess } from './windows.js';
 import {
-  REASON_EXITED,
-  REASON_INTERRUPTED,
-  REASON_TERMINATED,
-  REASON_TIMEOUT,
-  EXIT_INTERRUPTED,
-  EXIT_TERMINATED,
-  EXIT_TIMEOUT
+  REASON_EXITED, REASON_INTERRUPTED, REASON_TERMINATED, REASON_TIMEOUT,
+  EXIT_INTERRUPTED, EXIT_TERMINATED, EXIT_TIMEOUT
 } from './protocol.js';
-
-// Internal Windows cmd.exe built-in commands
-const CMD_BUILTINS = new Set([
-  'assoc', 'attrib', 'break', 'call', 'cd', 'chcp', 'chdir', 'cls', 'color',
-  'copy', 'date', 'del', 'dir', 'echo', 'endlocal', 'erase', 'exit', 'for',
-  'ftype', 'goto', 'help', 'if', 'md', 'mkdir', 'mklink', 'move', 'path',
-  'pause', 'popd', 'prompt', 'pushd', 'rd', 'rem', 'ren', 'rename', 'rmdir',
-  'set', 'setlocal', 'shift', 'start', 'time', 'title', 'type', 'ver', 'verify',
-  'vol'
-]);
-
-function resolveExecutableWindows(prog, cwd = process.cwd()) {
-  if (path.extname(prog)) return prog;
-  const pathExt = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';');
-  const pathenv = (process.env.PATH || '').split(path.delimiter);
-  for (const dir of [cwd, ...pathenv]) {
-    for (const ext of pathExt) {
-      const candidate = path.join(dir, prog + ext);
-      try {
-        if (fs.existsSync(candidate)) return candidate;
-      } catch {}
-    }
-  }
-  return prog;
-}
-
-export function killProcessTree(pid) {
-  if (!pid) return;
-  if (process.platform === 'win32') {
-    try {
-      exec(`taskkill /pid ${pid} /T /F`, { stdio: 'ignore', windowsHide: true }, () => {});
-    } catch {
-      // Ignore
-    }
-  } else {
-    try {
-      process.kill(-pid, 'SIGKILL');
-    } catch {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // Ignore
-      }
-    }
-  }
-}
 
 export class Session {
   constructor(options, handlers = {}) {
-    this.id = options.id || Math.random().toString(36).substring(2, 10);
-    this.argv = options.argv || [];
-    this.shell = Boolean(options.shell);
-    this.cwd = options.cwd || process.cwd();
-    this.timeoutMs = options.timeoutMs || 0;
-    this.handlers = handlers; // { onStdout, onStderr, onExit }
-
-    this.child = null;
-    this.pid = 0;
+    this.id = options.id || crypto.randomBytes(8).toString('hex');
+    this.options = options;
+    this.handlers = handlers;
+    this.cwd = path.resolve(options.cwd || process.cwd());
     this.mode = 'pipe';
-    this.exitReason = null;
+    this.pid = 0;
+    this.child = null;
+    this.exitReason = REASON_EXITED;
     this.syntheticCode = null;
     this.terminated = false;
+    this.finished = false;
     this.timeoutTimer = null;
     this.startedAt = new Date();
+    this.done = new Promise(resolve => { this.resolveDone = resolve; });
   }
 
   start() {
-    let executable = '';
-    let args = [];
-
-    // Format child environment
-    const childEnv = { ...process.env };
-    if (Array.isArray(this.argv.env)) {
-      for (const item of this.argv.env) {
-        const idx = item.indexOf('=');
-        if (idx > 0) {
-          childEnv[item.substring(0, idx)] = item.substring(idx + 1);
-        }
-      }
-    }
-
-    if (this.shell) {
-      executable = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
-      const cmdLine = this.argv.join(' ');
-      args = process.platform === 'win32' ? ['/d', '/s', '/c', cmdLine] : ['-c', cmdLine];
-      this.command = cmdLine;
-    } else {
-      if (!this.argv.length) {
-        throw new Error('No command provided in argv');
-      }
-
-      const rawProg = this.argv[0];
-      const progLower = rawProg.toLowerCase();
-
-      if (process.platform === 'win32') {
-        const resolved = resolveExecutableWindows(rawProg, this.cwd);
-        const resolvedLower = resolved.toLowerCase();
-
-        if (CMD_BUILTINS.has(progLower) || resolvedLower.endsWith('.cmd') || resolvedLower.endsWith('.bat')) {
-          executable = 'cmd.exe';
-          const cmdLine = this.argv.join(' ');
-          args = ['/d', '/s', '/c', cmdLine];
-          this.command = cmdLine;
-        } else if (progLower === 'cmd' || progLower === 'cmd.exe') {
-          executable = 'cmd.exe';
-          args = this.argv.slice(1);
-          // Turn off pipe echo so input lines are not duplicated on screen
-          if (!args.some(a => /^[/-]q$/i.test(a))) {
-            args.unshift('/q');
-          }
-          this.command = this.argv.join(' ');
-        } else {
-          executable = resolved;
-          args = this.argv.slice(1);
-          this.command = this.argv.join(' ');
-        }
-      } else {
-        executable = rawProg;
-        args = this.argv.slice(1);
-        this.command = this.argv.join(' ');
-      }
-    }
-
-    // Spawn process with windowsHide: true (guarantees NO window ever flashes on screen)
-    try {
-      this.child = spawn(executable, args, {
-        cwd: this.cwd,
-        env: childEnv,
-        windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe']
+    const env = mergeEnvironment(this.options.env);
+    const command = prepareCommand({ ...this.options, cwd: this.cwd, env });
+    this.command = command.command;
+    if (process.platform === 'win32') {
+      this.native = new WindowsProcess({ ...this.options, ...command, cwd: this.cwd, env }, {
+        onStdout: chunk => this.handlers.onStdout?.(chunk),
+        onStderr: chunk => this.handlers.onStderr?.(chunk),
+        onExit: code => this.handleExit(code)
       });
-    } catch (err) {
-      throw new Error(`Failed to spawn ${executable}: ${err.message}`);
+      const info = this.native.start();
+      this.pid = info.pid;
+      this.mode = info.mode;
+    } else {
+      if (this.options.tty) throw new Error('TTY is only supported on Windows');
+      this.child = spawn(command.executable, command.args, { cwd: this.cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      this.pid = this.child.pid;
+      this.child.stdout.on('data', chunk => this.handlers.onStdout?.(chunk));
+      this.child.stderr.on('data', chunk => this.handlers.onStderr?.(chunk));
+      this.child.stdin.on('error', () => {});
+      this.child.once('error', error => {
+        this.syntheticCode = 1;
+        this.handlers.onStderr?.(Buffer.from(`${error.message}\n`));
+      });
+      this.child.once('close', code => { this.killPortable(); this.handleExit(code ?? 1); });
     }
-
-    this.pid = this.child.pid;
-
-    if (this.timeoutMs > 0) {
-      this.timeoutTimer = setTimeout(() => {
-        this.terminate(REASON_TIMEOUT, EXIT_TIMEOUT);
-      }, this.timeoutMs);
-    }
-
-    this.child.stdout.on('data', (chunk) => {
-      if (this.handlers.onStdout) {
-        this.handlers.onStdout(chunk);
-      }
-    });
-
-    this.child.stderr.on('data', (chunk) => {
-      if (this.handlers.onStderr) {
-        this.handlers.onStderr(chunk);
-      }
-    });
-
-    this.child.on('error', (err) => {
-      if (this.handlers.onStderr) {
-        this.handlers.onStderr(Buffer.from(`Process error: ${err.message}\n`));
-      }
-    });
-
-    this.child.on('close', (code) => {
-      this._handleExit(code);
-    });
-
-    return {
-      id: this.id,
-      pid: this.pid,
-      mode: this.mode,
-      command: this.command,
-      cwd: this.cwd
-    };
+    if (this.options.timeoutMs > 0) this.timeoutTimer = setTimeout(() => this.terminate(REASON_TIMEOUT, EXIT_TIMEOUT), this.options.timeoutMs);
+    return { id: this.id, pid: this.pid, mode: this.mode, command: this.command, cwd: this.cwd };
   }
 
-  _handleExit(code) {
-    if (this.timeoutTimer) {
-      clearTimeout(this.timeoutTimer);
-      this.timeoutTimer = null;
-    }
-
-    let finalCode = code ?? 0;
-    let finalReason = this.exitReason || REASON_EXITED;
-
-    if (this.syntheticCode !== null) {
-      finalCode = this.syntheticCode;
-    }
-
-    if (this.handlers.onExit) {
-      this.handlers.onExit({
-        code: finalCode,
-        reason: finalReason,
-        elapsedMs: Date.now() - this.startedAt.getTime()
-      });
-    }
+  handleExit(code) {
+    if (this.finished) return;
+    this.finished = true;
+    clearTimeout(this.timeoutTimer);
+    const info = { code: this.syntheticCode ?? code, reason: this.exitReason, elapsedMs: Date.now() - this.startedAt.getTime() };
+    this.handlers.onExit?.(info);
+    this.resolveDone(info);
   }
 
   resize(cols, rows) {
-    // Ignored in pipe mode
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || cols > 500 || rows < 1 || rows > 500) return;
+    this.native?.resize(cols, rows);
   }
 
-  writeStdin(chunk) {
-    if (this.child?.stdin?.writable) {
-      this.child.stdin.write(chunk);
-    }
+  writeStdin(chunk, onWritten) {
+    if (this.finished) return;
+    if (this.native) this.native.write(chunk, onWritten);
+    else if (this.child?.stdin?.writable) this.child.stdin.write(chunk, onWritten);
   }
 
   endStdin() {
-    if (this.child?.stdin?.writable) {
-      this.child.stdin.end();
-    }
+    if (this.native) this.native.endInput();
+    else this.child?.stdin?.end();
   }
 
   interrupt() {
-    this.terminate(REASON_INTERRUPTED, EXIT_INTERRUPTED);
+    if (this.finished || this.terminated) return;
+    if (this.mode === 'pty') {
+      // The application owns terminal Ctrl+C: it may cancel an operation, read
+      // the byte in raw mode, or exit. Only lifecycle events terminate the job.
+      this.native.write(Buffer.from([3]));
+    } else this.terminate(REASON_INTERRUPTED, EXIT_INTERRUPTED);
+  }
+
+  killPortable() {
+    if (!this.pid) return;
+    try { process.kill(-this.pid, 'SIGKILL'); } catch {}
   }
 
   terminate(reason = REASON_TERMINATED, code = EXIT_TERMINATED) {
-    if (this.terminated) return;
+    if (this.finished || this.terminated) return;
     this.terminated = true;
     this.exitReason = reason;
     this.syntheticCode = code;
+    clearTimeout(this.timeoutTimer);
+    if (this.native) this.native.terminate(code);
+    else this.killPortable();
+  }
 
-    if (this.timeoutTimer) {
-      clearTimeout(this.timeoutTimer);
-      this.timeoutTimer = null;
-    }
+  pauseOutput() {
+    this.native?.pause();
+    this.child?.stdout.pause();
+    this.child?.stderr.pause();
+  }
 
-    if (this.pid) {
-      killProcessTree(this.pid);
-    }
+  resumeOutput() {
+    this.native?.resume();
+    this.child?.stdout.resume();
+    this.child?.stderr.resume();
   }
 }

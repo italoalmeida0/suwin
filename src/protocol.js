@@ -1,5 +1,7 @@
 // protocol.js - Protocol constants and helpers for Security Undertaking Windows (suwin)
 export const SCHEMA_VERSION = 1;
+export const MAX_ACTIVATION_MS = 24 * 60 * 60 * 1000;
+export const MAX_TIMEOUT_MS = 0x7fffffff;
 
 export const PATH_STATUS = '/v1/status';
 export const PATH_RUN = '/v1/run';
@@ -20,6 +22,7 @@ export const TYPE_ERROR = 'error';
 export const TYPE_NOTICE = 'notice';
 export const TYPE_RESIZE = 'resize';
 export const TYPE_STDIN_EOF = 'stdin_eof';
+export const TYPE_STDIN_ACK = 'stdin_ack';
 export const TYPE_INTERRUPT = 'interrupt';
 export const TYPE_TERMINATE = 'terminate';
 
@@ -50,7 +53,7 @@ export const CODE_SHUTTING_DOWN = 'shutting_down';
  */
 export function parseDuration(val, defaultMs = 0) {
   if (val === undefined || val === null || val === '') return defaultMs;
-  if (typeof val === 'number') return val > 0 ? val : defaultMs;
+  if (typeof val === 'number') return Number.isSafeInteger(val) && val > 0 && val <= MAX_TIMEOUT_MS ? val : defaultMs;
 
   const str = String(val).trim();
   const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?$/i.exec(str);
@@ -59,14 +62,26 @@ export function parseDuration(val, defaultMs = 0) {
   const num = parseFloat(match[1]);
   const unit = (match[2] || 's').toLowerCase();
 
-  switch (unit) {
-    case 'ms': return Math.round(num);
-    case 's': return Math.round(num * 1000);
-    case 'm': return Math.round(num * 60 * 1000);
-    case 'h': return Math.round(num * 60 * 60 * 1000);
-    case 'd': return Math.round(num * 24 * 60 * 60 * 1000);
-    default: return defaultMs;
+  const multiplier = { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 }[unit];
+  const result = Math.round(num * multiplier);
+  return Number.isSafeInteger(result) && result > 0 && result <= MAX_TIMEOUT_MS ? result : defaultMs;
+}
+
+export function validateStartRequest(req) {
+  if (!req || req.type !== TYPE_START || req.schema !== SCHEMA_VERSION) throw new Error('Incompatible or missing protocol schema');
+  if (!Array.isArray(req.argv) || req.argv.length === 0 || req.argv.length > 4096 ||
+      req.argv.some(arg => typeof arg !== 'string' || arg.includes('\0')) || !req.argv[0]) throw new Error('Expected a nonempty argv array of strings');
+  if (req.cwd !== undefined && (typeof req.cwd !== 'string' || !req.cwd || req.cwd.includes('\0'))) throw new Error('Invalid working directory');
+  for (const key of ['shell', 'tty']) if (req[key] !== undefined && typeof req[key] !== 'boolean') throw new Error(`Invalid ${key} flag`);
+  if (req.timeoutMs !== undefined && (!Number.isSafeInteger(req.timeoutMs) || req.timeoutMs < 0 || req.timeoutMs > MAX_TIMEOUT_MS)) throw new Error('Invalid command timeout');
+  for (const key of ['cols', 'rows']) if (req[key] !== undefined && (!Number.isInteger(req[key]) || req[key] < 1 || req[key] > 500)) throw new Error(`Invalid terminal ${key}`);
+  if (req.env !== undefined) {
+    if (!req.env || typeof req.env !== 'object' || Array.isArray(req.env) || Object.keys(req.env).length > 4096) throw new Error('Invalid environment');
+    for (const [key, value] of Object.entries(req.env)) {
+      if (!key || /[=\0]/.test(key) || typeof value !== 'string' || value.includes('\0')) throw new Error('Invalid environment variable');
+    }
   }
+  return req;
 }
 
 /**

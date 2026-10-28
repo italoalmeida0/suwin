@@ -2,6 +2,7 @@
 // bin/suwin.js - Security Undertaking Windows client CLI
 import { runCommand, getStatus, SuwinClientError } from '../src/client.js';
 import { parseDuration } from '../src/protocol.js';
+import { VERSION } from '../src/version.js';
 
 const usage = `suwin - Security Undertaking Windows execution client
 
@@ -28,7 +29,7 @@ function parseArgs(args) {
   const opts = {
     argv: [],
     shell: false,
-    tty: false,
+    tty: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     timeoutMs: 0,
     cwd: process.cwd(),
     version: false,
@@ -37,6 +38,7 @@ function parseArgs(args) {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (arg === '--') { opts.argv = args.slice(i + 1); break; }
     if (arg === '-h' || arg === '--help') {
       opts.help = true;
       return opts;
@@ -58,13 +60,16 @@ function parseArgs(args) {
       continue;
     }
     if (arg === '--cwd') {
+      if (!args[i + 1]) throw new Error('--cwd requires a directory');
       opts.cwd = args[++i];
       continue;
     }
     if (arg === '--timeout') {
       opts.timeoutMs = parseDuration(args[++i], 0);
+      if (!opts.timeoutMs) throw new Error('--timeout requires a valid positive duration');
       continue;
     }
+    if (arg.startsWith('-')) throw new Error(`Unknown option: ${arg}`);
     // First non-flag argument starts the command argv
     opts.argv = args.slice(i);
     break;
@@ -74,7 +79,9 @@ function parseArgs(args) {
 }
 
 async function main() {
-  const opts = parseArgs(process.argv.slice(2));
+  let opts;
+  try { opts = parseArgs(process.argv.slice(2)); }
+  catch (error) { console.error(`suwin: ${error.message}`); process.exitCode = 2; return; }
 
   if (opts.help) {
     console.log(usage);
@@ -82,7 +89,7 @@ async function main() {
   }
 
   if (opts.version) {
-    console.log('suwin 1.0.0 (Security Undertaking Windows)');
+    console.log(`suwin ${VERSION} (Security Undertaking Windows)`);
     process.exit(0);
   }
 
@@ -104,19 +111,13 @@ async function main() {
     process.exit(1);
   }
 
-  let wasRaw = false;
-  if (opts.tty && process.stdin.isTTY && typeof process.stdin.setRawMode === 'function') {
-    try {
-      process.stdin.setRawMode(true);
-      process.stdin.resume();
-      wasRaw = true;
-    } catch {}
-  }
+  const wasRaw = Boolean(process.stdin.isRaw);
+  let changedRaw = false;
 
   const cleanupTerminal = () => {
-    if (wasRaw && typeof process.stdin.setRawMode === 'function') {
+    if (changedRaw) {
       try {
-        process.stdin.setRawMode(false);
+        process.stdin.setRawMode(wasRaw);
       } catch {}
     }
   };
@@ -132,11 +133,17 @@ async function main() {
       timeoutMs: opts.timeoutMs,
       stdin: process.stdin,
       stdout: process.stdout,
-      stderr: process.stderr
+      stderr: process.stderr,
+      onStarted: ({ mode }) => {
+        if (mode === 'pty' && process.stdin.isTTY && typeof process.stdin.setRawMode === 'function') {
+          process.stdin.setRawMode(true);
+          changedRaw = true;
+        }
+      }
     });
 
     cleanupTerminal();
-    process.exit(result.code);
+    process.exitCode = result.code;
   } catch (err) {
     cleanupTerminal();
     if (err instanceof SuwinClientError) {
@@ -144,7 +151,7 @@ async function main() {
     } else {
       console.error(`suwin error: ${err.message}`);
     }
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
