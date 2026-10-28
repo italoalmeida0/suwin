@@ -52,11 +52,10 @@ fs.writeFileSync(path.join(binDir, 'suwin.cmd'), suwinCmd, 'ascii');
 const suwinsvcCmd = `@echo off\r\nnode "%~dp0..\\node\\bin\\suwinsvc.js" %*\r\n`;
 fs.writeFileSync(path.join(binDir, 'suwinsvc.cmd'), suwinsvcCmd, 'ascii');
 
-const uninstallCmd = `@echo off\r\nnode "%~dp0..\\uninstall.mjs"\r\n`;
+const uninstallCmd = `@echo off\r\nnode "%~dp0..\\uninstall.js"\r\n`;
 fs.writeFileSync(path.join(binDir, 'uninstall-suwin.cmd'), uninstallCmd, 'ascii');
 
-// Copy uninstall scripts
-fs.copyFileSync(path.join(__dirname, 'uninstall.mjs'), path.join(suwinHome, 'uninstall.mjs'));
+// Copy uninstall script
 fs.copyFileSync(path.join(__dirname, 'uninstall.js'), path.join(suwinHome, 'uninstall.js'));
 
 // 4. Update User PATH in Windows Registry
@@ -102,4 +101,4 @@ console.log('  \x1b[33msuwinsvc\x1b[0m\n');
 console.log('\x1b[36mTo run commands in a supervised session:\x1b[0m');
 console.log('  \x1b[33msuwin whoami /priv\x1b[0m\n');
 console.log('\x1b[36mTo uninstall anytime:\x1b[0m');
-console.log('  \x1b[33muninstall-suwin\x1b[0m  (or run ' + path.join(suwinHome, 'uninstall.mjs') + ')\n');
+console.log('  \x1b[33muninstall-suwin\x1b[0m  (or run ' + path.join(suwinHome, 'uninstall.js') + ')\n');

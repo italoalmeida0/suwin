@@ -12,7 +12,7 @@
     "start": "node ./bin/suwinsvc.js",
     "suwin": "node ./bin/suwin.js",
     "install-local": "node ./scripts/install.js",
-    "uninstall-local": "node ./scripts/uninstall.mjs",
+    "uninstall-local": "node ./scripts/uninstall.js",
     "test": "node test/e2e.test.js"
   },
   "keywords": [

@@ -156,7 +156,7 @@ uninstall-suwin
 
 Or run:
 ```powershell
-node ~\.suwin\uninstall.mjs
+node ~\.suwin\uninstall.js
 ```
 
 This stops running supervisor services, removes `~/.suwin/bin` from your user `PATH`, and deletes the `~/.suwin` directory completely.
