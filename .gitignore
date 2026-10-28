@@ -1,0 +1,5 @@
+node_modules/
+.test_suwin/
+*.log
+.DS_Store
+Thumbs.db

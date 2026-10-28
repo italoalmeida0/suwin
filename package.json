@@ -1,0 +1,33 @@
+{
+  "name": "suwin",
+  "version": "1.0.0",
+  "description": "Security Undertaking Windows (suwin) - Supervised administrative session coordinator",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "suwin": "./bin/suwin.js",
+    "suwinsvc": "./bin/suwinsvc.js"
+  },
+  "scripts": {
+    "start": "node ./bin/suwinsvc.js",
+    "suwin": "node ./bin/suwin.js",
+    "install-local": "node ./scripts/install.js",
+    "uninstall-local": "node ./scripts/uninstall.mjs",
+    "test": "node test/e2e.test.js"
+  },
+  "keywords": [
+    "security",
+    "undertaking",
+    "windows",
+    "suwin",
+    "supervisor",
+    "session-manager",
+    "tray"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "koffi": "^3.3.5",
+    "ws": "^8.18.0"
+  }
+}
